@@ -8,8 +8,9 @@ Userscript para **Tampermonkey** que descarga un expediente completo de la
   encabezado, tipografía y diagramación), no se recompone el texto.
 - Los **adjuntos** se incorporan tal cual vienen (conservan firma, sellos y
   formato) y quedan justo detrás del proveído o escrito al que pertenecen.
-- Cada página lleva una **capa de texto invisible**, así el PDF sigue siendo
-  buscable con Ctrl+F aunque las actuaciones sean imágenes.
+- Cada página lleva una **capa de texto invisible**, ubicada palabra por
+  palabra encima de la imagen: el PDF se puede buscar con Ctrl+F, y al
+  seleccionar o copiar se marca exactamente el texto que se ve.
 - Convive con la **validación anti-bot** de la MEV: espera, la resuelve y
   sigue desde donde estaba, sin perder lo descargado.
 

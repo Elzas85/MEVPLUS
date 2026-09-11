@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MEV+ - Bajar expediente completo de la MEV
 // @namespace    https://mev.scba.gov.ar/
-// @version      1.8.1
+// @version      1.8.0
 // @description  Baja el expediente de la MEV tal como está presentado. Elegís qué bajar: todo, por rango de fechas, o a mano tildando actuaciones (con buscador y Todas/Ninguna/Invertir). Cada actuación se captura con la presentación original, los adjuntos se guardan sin tocar y se arma un PDF único en orden cronológico. Convive con la validación anti-bot: espera, la resuelve y sigue donde estaba. Pestaña About con versión, autoría y link al repositorio.
 // @author       Ignacio Kinbaum
 // @license      GPL-3.0-or-later
@@ -99,7 +99,7 @@
   // Datos de la pestaña About. Editá acá el GitHub cuando tengas el repo.
   const APP = {
     nombre: 'MEV+ — Bajar expediente',
-    version: '1.8.1',
+    version: '1.8.0',
     autor: 'Ignacio Kinbaum',
     anio: '2026',
     mail: 'estudiojuridicokinbaum@gmail.com',
@@ -509,45 +509,9 @@
     });
   }
 
-  /**
-   * Dónde cae cada palabra dentro de lo que se va a fotografiar, en píxeles
-   * CSS relativos al propio elemento. Se mide sobre el mismo diseño que va a
-   * la imagen, así la capa de texto invisible del PDF queda encima de la
-   * misma palabra: seleccionar o buscar marca lo que se ve, no un texto
-   * corrido en otra parte de la hoja.
-   */
-  function medirPalabras(objetivo) {
-    const doc = objetivo.ownerDocument;
-    const vista = doc.defaultView;
-    const base = objetivo.getBoundingClientRect();
-    const rango = doc.createRange();
-    const out = [];
-    const recorrido = doc.createTreeWalker(objetivo, 4 /* NodeFilter.SHOW_TEXT */);
-    for (let n = recorrido.nextNode(); n; n = recorrido.nextNode()) {
-      const padre = n.parentElement;
-      if (!padre || /^(SCRIPT|STYLE|NOSCRIPT|TEMPLATE)$/.test(padre.tagName)) continue;
-      if (!/\S/.test(n.nodeValue)) continue;
-      const est = vista.getComputedStyle(padre);
-      if (est.visibility === 'hidden' || est.display === 'none' || Number(est.opacity) === 0) continue;
-      const re = /\S+/g;
-      let m;
-      while ((m = re.exec(n.nodeValue))) {
-        rango.setStart(n, m.index);
-        rango.setEnd(n, m.index + m[0].length);
-        // Una palabra partida entre dos renglones da dos cajas: se toma la primera.
-        const r = rango.getClientRects()[0];
-        if (!r || r.width < 1 || r.height < 1) continue;
-        out.push({ t: m[0], x: r.left - base.left, y: r.top - base.top, w: r.width, h: r.height });
-      }
-    }
-    return out;
-  }
-
   async function fotografiar(doc) {
     const objetivo = doc.querySelector(SEL.imprimible) || doc.body;
-    let palabras = [];
-    try { palabras = medirPalabras(objetivo); } catch (e) { log('no se pudo medir el texto', e); }
-    const lienzo = await html2canvas(objetivo, {
+    return html2canvas(objetivo, {
       scale: CONFIG.escala,
       backgroundColor: '#ffffff',
       useCORS: true,
@@ -556,9 +520,6 @@
       width: objetivo.scrollWidth,
       height: objetivo.scrollHeight
     });
-    lienzo.palabras = palabras;
-    lienzo.anchoCss = objetivo.scrollWidth;
-    return lienzo;
   }
 
   async function capturarProveido(html) {
@@ -742,73 +703,18 @@
       paginas.push(pagina);
     }
     // Capa invisible: mantiene el Ctrl+F sobre una página que es imagen.
-    // Cada palabra va encima de la misma palabra de la imagen y con su tamaño.
-    if (CONFIG.capaTextoBuscable && paginas.length) {
+    if (CONFIG.capaTextoBuscable && textoBuscable && paginas.length) {
       try {
-        if (lienzo.palabras && lienzo.palabras.length && lienzo.anchoCss) {
-          capaAlineada(paginas, lienzo, escala, altoTramoPx, fuente);
-        } else if (textoBuscable) {
-          // Sin medidas (no debería pasar): el texto corrido de antes, que al
-          // menos deja buscar aunque no coincida con la imagen.
-          const lineas = envolver(textoBuscable, fuente, 7, A4[0] - M * 2);
-          let p = 0, y = A4[1] - M;
-          for (const l of lineas) {
-            if (y < M) { p++; y = A4[1] - M; if (p >= paginas.length) break; }
-            if (l) paginas[p].drawText(l, { x: M, y, size: 7, font: fuente, opacity: 0 });
-            y -= 9;
-          }
+        const lineas = envolver(textoBuscable, fuente, 7, A4[0] - M * 2);
+        let p = 0, y = A4[1] - M;
+        for (const l of lineas) {
+          if (y < M) { p++; y = A4[1] - M; if (p >= paginas.length) break; }
+          if (l) paginas[p].drawText(l, { x: M, y, size: 7, font: fuente, opacity: 0 });
+          y -= 9;
         }
       } catch (e) { log('capa de texto omitida', e); }
     }
     return paginas.length;
-  }
-
-  /**
-   * Texto invisible (modo de dibujo 3, el mismo que usan los PDF con OCR)
-   * palabra por palabra. Cada una va en la página y el lugar donde quedó en
-   * la imagen, con la altura de su renglón, y se estira o se angosta en
-   * horizontal hasta medir lo mismo que en la imagen. Así la selección cubre
-   * exactamente la palabra que se ve, aunque la letra de la MEV no sea Helvetica.
-   */
-  function capaAlineada(paginas, lienzo, escala, altoTramoPx, fuente) {
-    const { pushGraphicsState, popGraphicsState, beginText, endText, setFontAndSize,
-      setTextRenderingMode, TextRenderingMode, setCharacterSqueeze, setTextMatrix, showText } = PDFLib;
-    const r = lienzo.width / lienzo.anchoCss;            // px del lienzo por px CSS
-    const porPagina = paginas.map(() => []);
-    for (const p of lienzo.palabras) {
-      const texto = aWinAnsi(p.t).trim();
-      if (!texto) continue;
-      const arriba = p.y * r;
-      const altoPx = p.h * r;
-      // El tramo (la página) es el que contiene el centro de la palabra.
-      const t = Math.floor((arriba + altoPx / 2) / altoTramoPx);
-      if (t < 0 || t >= paginas.length) continue;
-      const alto = altoPx * escala;                       // en puntos
-      const tam = alto * 0.89;                            // cuerpo de la letra
-      const natural = fuente.widthOfTextAtSize(texto, tam);
-      if (!(natural > 0) || tam < 0.5) continue;
-      porPagina[t].push({
-        texto, tam,
-        x: M + p.x * r * escala,
-        y: A4[1] - M - (arriba - t * altoTramoPx) * escala - alto * 0.81,   // línea de base
-        estira: Math.max(20, Math.min(400, 100 * (p.w * r * escala) / natural))
-      });
-    }
-    porPagina.forEach((lista, i) => {
-      if (!lista.length) return;
-      const pagina = paginas[i];
-      pagina.setFont(fuente);
-      const clave = pagina.fontKey;
-      const ops = [pushGraphicsState(), beginText(), setTextRenderingMode(TextRenderingMode.Invisible)];
-      for (const w of lista) {
-        // El espacio del final no se ve ni cuenta para el ancho: está para que al
-        // copiar o buscar las palabras no salgan pegadas.
-        ops.push(setFontAndSize(clave, w.tam), setCharacterSqueeze(w.estira),
-          setTextMatrix(1, 0, 0, 1, w.x, w.y), showText(fuente.encodeText(w.texto + ' ')));
-      }
-      ops.push(endText(), popGraphicsState());
-      for (let k = 0; k < ops.length; k += 2000) pagina.pushOperators(...ops.slice(k, k + 2000));
-    });
   }
 
   async function armarPdf(datos, actuaciones) {
